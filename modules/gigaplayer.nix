@@ -6,6 +6,10 @@ let
   # Identifier used inside `wifi.pskFile` to look up the PSK at runtime.
   pskExtName = "psk_gigaplayer";
 
+  # When true, route audio through PipeWire/WirePlumber (auto-switching
+  # between speakers / HDMI / 3.5mm); when false, snapclient talks raw ALSA.
+  usePipewire = cfg.audio.autoSwitch;
+
   snapclientArgs = lib.concatStringsSep " " (
     lib.optional (cfg.snapcast.host != null) "--host ${cfg.snapcast.host}"
     ++ [ "--port ${toString cfg.snapcast.port}" ]
@@ -132,6 +136,47 @@ in
       };
     };
 
+    audio = {
+      autoSwitch = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Route audio through PipeWire + WirePlumber so the output follows
+          whatever is connected: built-in speakers by default, switching to
+          HDMI or the 3.5mm jack when plugged in and back when removed.
+
+          When false, snapclient talks to raw ALSA instead (lighter, no audio
+          daemon). The codec's "Auto-Mute Mode" still handles speaker <-> 3.5mm
+          switching, but HDMI does not auto-switch (pin it with
+          {option}`gigaplayer.snapcast.soundcard`).
+        '';
+      };
+
+      unmuteAtBoot = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Unmute outputs and set a volume on every sound card at boot.
+
+          The image is stateless (RAM-only), so there is no saved ALSA mixer
+          state to restore; many laptop codecs then come up muted / at zero.
+          This runs `amixer` on each card at boot to unmute
+          Master/Speaker/Headphone/PCM (leaving the codec's "Auto-Mute Mode"
+          at its default so jack-sense switching keeps working).
+        '';
+      };
+
+      volume = lib.mkOption {
+        type = lib.types.ints.between 0 100;
+        default = 80;
+        description = ''
+          Playback volume percent set on the hardware mixer at boot. With
+          {option}`gigaplayer.audio.autoSwitch` enabled, WirePlumber manages
+          the effective volume on top of this (adjust live with `wpctl`).
+        '';
+      };
+    };
+
     console.autologin = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -209,20 +254,77 @@ in
       nssmdns4 = true;
     };
 
-    environment.systemPackages = with pkgs; [ snapcast alsa-utils ];
+    environment.systemPackages = with pkgs; [ snapcast alsa-utils ]
+      ++ lib.optional usePipewire pkgs.wireplumber; # `wpctl` for debugging
+
+    # --- Audio routing (PipeWire) -----------------------------------------
+    # System-wide PipeWire (no graphical/user session on this appliance).
+    # WirePlumber then auto-routes the snapclient stream to the active output
+    # and switches when HDMI / the 3.5mm jack are (un)plugged.
+    security.rtkit.enable = lib.mkIf usePipewire true;
+    services.pipewire = lib.mkIf usePipewire {
+      enable = true;
+      systemWide = true;
+      alsa.enable = true; # ALSA `default` -> PipeWire, so snapclient routes through it
+      alsa.support32Bit = false;
+      pulse.enable = true;
+    };
+
+    # Don't pin a saved default sink; pick the best available output by
+    # priority so a newly connected HDMI/headphone takes over (and hands back
+    # when removed) instead of sticking to the previous one.
+    environment.etc."wireplumber/wireplumber.conf.d/51-gigaplayer-autoswitch.conf" =
+      lib.mkIf usePipewire {
+        text = ''
+          wireplumber.settings = {
+            device.restore-default-target = false
+            node.stream.restore-target = false
+          }
+        '';
+      };
+
+    # Stateless image: no saved mixer state, so unmute every card at boot
+    # (runs before snapclient so audio is audible immediately).
+    systemd.services.gigaplayer-alsa-unmute = lib.mkIf cfg.audio.unmuteAtBoot {
+      description = "Unmute ALSA outputs (stateless image has no saved mixer state)";
+      wantedBy = [ "multi-user.target" ];
+      before = [ "snapclient.service" ] ++ lib.optional usePipewire "pipewire.service";
+      path = [ pkgs.alsa-utils ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        cards=$(aplay -l 2>/dev/null | sed -n 's/^card \([0-9]\+\):.*/\1/p' | sort -u)
+        for c in $cards; do
+          amixer -c "$c" sset 'Master'    ${toString cfg.audio.volume}% unmute || true
+          amixer -c "$c" sset 'Speaker'   unmute || true
+          amixer -c "$c" sset 'Headphone' unmute || true
+          amixer -c "$c" sset 'PCM'       100% unmute || true
+        done
+      '';
+    };
 
     systemd.services.snapclient = {
       description = "Snapcast client";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" "sound.target" ];
-      wants = [ "network.target" ];
+      after = [ "network.target" "sound.target" ]
+        ++ lib.optional usePipewire "pipewire.service";
+      wants = [ "network.target" ]
+        ++ lib.optional usePipewire "pipewire.service";
       serviceConfig = {
         ExecStart = "${pkgs.snapcast}/bin/snapclient ${snapclientArgs}";
         Restart = "always";
         RestartSec = 5;
         DynamicUser = true;
-        SupplementaryGroups = [ "audio" ];
-        # Light hardening (snapclient only needs the network and /dev/snd).
+        # `audio` for raw /dev/snd; `pipewire` to reach the system-wide socket.
+        SupplementaryGroups = [ "audio" ] ++ lib.optional usePipewire "pipewire";
+        # Let the PipeWire client libs find the system-wide runtime sockets.
+        Environment = lib.optionals usePipewire [
+          "PIPEWIRE_RUNTIME_DIR=/run/pipewire"
+          "PULSE_RUNTIME_PATH=/run/pipewire/pulse"
+        ];
+        # Light hardening (snapclient only needs the network and audio).
         ProtectSystem = "strict";
         ProtectHome = true;
         ProtectControlGroups = true;

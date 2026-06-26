@@ -86,6 +86,9 @@ All options live under `gigaplayer.*` (see
 | `snapcast.soundcard` | `null` | ALSA output device. |
 | `snapcast.name` | `null` | Client id (`--hostID`). |
 | `snapcast.extraArgs` | `[]` | Extra `snapclient` arguments. |
+| `audio.autoSwitch` | `true` | Route via PipeWire so output follows speakers/HDMI/3.5mm (see below). |
+| `audio.unmuteAtBoot` | `true` | Unmute + set volume on every card at boot (stateless images have no saved mixer state). |
+| `audio.volume` | `80` | Hardware volume percent applied at boot. |
 | `hostName` | `"gigaplayer"` | System hostname. |
 | `console.autologin` | `true` | Keep the live image's passwordless console autologin. |
 
@@ -106,6 +109,38 @@ Since the image is stateless (RAM-only), you would need to provide that file at
 runtime (e.g. baked onto a second partition, an initrd secret, or a
 secrets-management tool such as sops-nix / agenix layered on top). `wifi.psk`
 is the simpler choice unless you specifically need this.
+
+## Audio output routing
+
+With `audio.autoSwitch = true` (default) the image runs **PipeWire +
+WirePlumber** system-wide and snapclient plays into PipeWire. WirePlumber then
+picks the best available output and switches automatically:
+
+- built-in **speakers** by default,
+- **HDMI** when a display with audio is plugged in,
+- the **3.5mm jack** when headphones/speakers are plugged in,
+
+and hands back to the previous output when you unplug.
+
+Because this is a headless appliance there is no graphical session, so PipeWire
+runs in **system-wide** mode and snapclient (a system service) joins the
+`pipewire` group to reach it.
+
+Verify on the device over SSH after flashing:
+
+```sh
+systemctl status pipewire wireplumber snapclient   # all active
+wpctl status                                        # lists sinks + the default (*)
+wpctl set-volume @DEFAULT_AUDIO_SINK@ 80%           # adjust volume live
+```
+
+Plug/unplug HDMI or the 3.5mm jack and watch the default sink (`*`) move in
+`wpctl status`. To bias which output wins, set device priorities in a
+WirePlumber drop-in (`/etc/wireplumber/wireplumber.conf.d/…`).
+
+Set `audio.autoSwitch = false;` to drop PipeWire and use raw ALSA instead: the
+codec's Auto-Mute handles speakers ↔ 3.5mm, but HDMI then has to be pinned with
+`snapcast.soundcard`.
 
 ## Security notes
 
