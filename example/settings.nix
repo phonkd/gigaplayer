@@ -5,7 +5,7 @@
 # options from your own (private) configuration — see the README for the
 # recommended `gigaplayer.lib.mkIso { ... }` pattern.
 {
-  hostName = "gigaplayer";
+  # hostName = "living-room";  # defaults to DMI product name (e.g. "hp-elitebook-840-g5")
 
   wifi = {
     ssid = "REPLACE_ME_SSID";
