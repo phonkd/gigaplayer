@@ -31,17 +31,18 @@ let
         exec ${pkgs.snapcast}/bin/snapclient ${snapclientBaseArgs} --hostID "$name"
       ''}";
 
-  librespotBackend = if usePipewire then "pulseaudio" else "alsa";
-
+  # nixpkgs librespot is built with the alsa backend only; PipeWire's ALSA
+  # compat layer (alsa.enable = true) routes the output through PipeWire when
+  # active, so no separate backend flag is needed.
   librespotExecStart =
     if cfg.librespot.name != null
-    then "${pkgs.librespot}/bin/librespot --name ${lib.escapeShellArg cfg.librespot.name} --backend ${librespotBackend}"
+    then "${pkgs.librespot}/bin/librespot --name ${lib.escapeShellArg cfg.librespot.name}"
     else
       "${pkgs.writeShellScript "librespot-start" ''
         name=$(cat /sys/class/dmi/id/product_name 2>/dev/null)
         [ -z "$name" ] && name=$(cat /sys/class/dmi/id/board_name 2>/dev/null)
         [ -z "$name" ] && name=$(hostname)
-        exec ${pkgs.librespot}/bin/librespot --name "$name" --backend ${librespotBackend}
+        exec ${pkgs.librespot}/bin/librespot --name "$name"
       ''}";
 in
 {
@@ -334,9 +335,9 @@ in
     # Optionally drop the live image's passwordless console autologin.
     services.getty.autologinUser = lib.mkIf (!cfg.console.autologin) (lib.mkForce null);
 
-    # --- Snapcast client --------------------------------------------------
-    # mDNS so snapclient can find the server when no host is pinned.
-    services.avahi = lib.mkIf (cfg.snapcast.host == null) {
+    # mDNS: needed for snapclient server discovery and for librespot to
+    # announce itself as a Spotify Connect device via avahi-client.
+    services.avahi = lib.mkIf (cfg.snapcast.host == null || cfg.librespot.enable) {
       enable = true;
       nssmdns4 = true;
     };
