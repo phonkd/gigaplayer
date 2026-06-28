@@ -22,13 +22,26 @@ let
   # client shows up in Snapserver as e.g. "HP EliteBook 840 G5".
   snapclientExecStart =
     if cfg.snapcast.name != null
-    then "${pkgs.snapcast}/bin/snapclient ${snapclientBaseArgs} --hostID ${cfg.snapcast.name}"
+    then "${pkgs.snapcast}/bin/snapclient ${snapclientBaseArgs} --hostID ${lib.escapeShellArg cfg.snapcast.name}"
     else
       "${pkgs.writeShellScript "snapclient-start" ''
         name=$(cat /sys/class/dmi/id/product_name 2>/dev/null)
         [ -z "$name" ] && name=$(cat /sys/class/dmi/id/board_name 2>/dev/null)
         [ -z "$name" ] && name=$(hostname)
         exec ${pkgs.snapcast}/bin/snapclient ${snapclientBaseArgs} --hostID "$name"
+      ''}";
+
+  librespotBackend = if usePipewire then "pulseaudio" else "alsa";
+
+  librespotExecStart =
+    if cfg.librespot.name != null
+    then "${pkgs.librespot}/bin/librespot --name ${lib.escapeShellArg cfg.librespot.name} --backend ${librespotBackend}"
+    else
+      "${pkgs.writeShellScript "librespot-start" ''
+        name=$(cat /sys/class/dmi/id/product_name 2>/dev/null)
+        [ -z "$name" ] && name=$(cat /sys/class/dmi/id/board_name 2>/dev/null)
+        [ -z "$name" ] && name=$(hostname)
+        exec ${pkgs.librespot}/bin/librespot --name "$name" --backend ${librespotBackend}
       ''}";
 in
 {
@@ -157,6 +170,31 @@ in
       };
     };
 
+    bluetooth = {
+      enable = lib.mkEnableOption ''
+        Bluetooth audio receiver. Enables the Bluetooth stack (BlueZ) and
+        powers on the adapter at boot. Pair devices over SSH with
+        {command}`bluetoothctl`. Audio routing is automatic when
+        {option}`gigaplayer.audio.autoSwitch` is enabled (PipeWire handles
+        A2DP natively)
+      '';
+    };
+
+    librespot = {
+      enable = lib.mkEnableOption "Spotify Connect receiver via librespot";
+
+      name = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "Living Room";
+        description = ''
+          Spotify Connect device name shown in the Spotify app. When `null`
+          (the default), the name is read from the DMI product string at boot,
+          using the same logic as {option}`gigaplayer.snapcast.name`.
+        '';
+      };
+    };
+
     audio = {
       autoSwitch = lib.mkOption {
         type = lib.types.bool;
@@ -276,7 +314,9 @@ in
     };
 
     environment.systemPackages = with pkgs; [ snapcast alsa-utils ]
-      ++ lib.optional usePipewire pkgs.wireplumber; # `wpctl` for debugging
+      ++ lib.optional usePipewire pkgs.wireplumber   # `wpctl` for debugging
+      ++ lib.optional cfg.bluetooth.enable pkgs.bluez # `bluetoothctl` for pairing
+      ++ lib.optional cfg.librespot.enable pkgs.librespot;
 
     # --- Audio routing (PipeWire) -----------------------------------------
     # System-wide PipeWire (no graphical/user session on this appliance).
@@ -326,6 +366,39 @@ in
       '';
     };
 
+    # --- Bluetooth audio receiver -----------------------------------------
+    hardware.bluetooth = lib.mkIf cfg.bluetooth.enable {
+      enable = true;
+      powerOnBoot = true;
+    };
+
+    # --- Spotify Connect (librespot) --------------------------------------
+    systemd.services.librespot = lib.mkIf cfg.librespot.enable {
+      description = "Spotify Connect receiver (librespot)";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network.target" "sound.target" ]
+        ++ lib.optional usePipewire "pipewire.service";
+      wants = [ "network.target" ]
+        ++ lib.optional usePipewire "pipewire.service";
+      serviceConfig = {
+        ExecStart = librespotExecStart;
+        Restart = "always";
+        RestartSec = 5;
+        DynamicUser = true;
+        SupplementaryGroups = [ "audio" ] ++ lib.optional usePipewire "pipewire";
+        Environment = lib.optionals usePipewire [
+          "PIPEWIRE_RUNTIME_DIR=/run/pipewire"
+          "PULSE_RUNTIME_PATH=/run/pipewire/pulse"
+        ];
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ProtectControlGroups = true;
+        ProtectKernelTunables = true;
+        NoNewPrivileges = true;
+      };
+    };
+
+    # --- Snapcast client --------------------------------------------------
     systemd.services.snapclient = {
       description = "Snapcast client";
       wantedBy = [ "multi-user.target" ];
