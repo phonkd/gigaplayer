@@ -23,5 +23,13 @@
   snapcast = {
     # host = "192.168.1.10";   # pin the server, or omit for mDNS discovery
     # soundcard = "default";   # ALSA device; run `snapclient -l` to list
+    # name = "Living Room";    # defaults to DMI product name (e.g. "HP EliteBook 840 G5")
   };
+
+  # bluetooth.enable = true;   # A2DP sink; pair with `bluetoothctl` over SSH
+
+  # librespot = {
+  #   enable = true;            # Spotify Connect receiver
+  #   # name = "Living Room";  # defaults to DMI product name
+  # };
 }
