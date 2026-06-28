@@ -10,13 +10,26 @@ let
   # between speakers / HDMI / 3.5mm); when false, snapclient talks raw ALSA.
   usePipewire = cfg.audio.autoSwitch;
 
-  snapclientArgs = lib.concatStringsSep " " (
+  snapclientBaseArgs = lib.concatStringsSep " " (
     lib.optional (cfg.snapcast.host != null) "--host ${cfg.snapcast.host}"
     ++ [ "--port ${toString cfg.snapcast.port}" ]
     ++ lib.optional (cfg.snapcast.soundcard != null) "--soundcard ${cfg.snapcast.soundcard}"
-    ++ lib.optional (cfg.snapcast.name != null) "--hostID ${cfg.snapcast.name}"
     ++ cfg.snapcast.extraArgs
   );
+
+  # When name is set explicitly, pass it straight through. When null, use a
+  # shell wrapper that reads the DMI product name at service-start time so the
+  # client shows up in Snapserver as e.g. "HP EliteBook 840 G5".
+  snapclientExecStart =
+    if cfg.snapcast.name != null
+    then "${pkgs.snapcast}/bin/snapclient ${snapclientBaseArgs} --hostID ${cfg.snapcast.name}"
+    else
+      "${pkgs.writeShellScript "snapclient-start" ''
+        name=$(cat /sys/class/dmi/id/product_name 2>/dev/null)
+        [ -z "$name" ] && name=$(cat /sys/class/dmi/id/board_name 2>/dev/null)
+        [ -z "$name" ] && name=$(hostname)
+        exec ${pkgs.snapcast}/bin/snapclient ${snapclientBaseArgs} --hostID "$name"
+      ''}";
 in
 {
   options.gigaplayer = {
@@ -123,9 +136,17 @@ in
       name = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
+        example = "Living Room";
         description = ''
-          Client id reported to the server (snapclient `--hostID`). Defaults
-          to deriving one from the hardware/hostname when `null`.
+          Display name reported to the Snapserver (snapclient `--hostID`).
+
+          When `null` (the default), the name is read from the DMI product
+          string at boot (`/sys/class/dmi/id/product_name`, falling back to
+          the board name and then the hostname), so the client shows up as
+          e.g. "HP EliteBook 840 G5" without any manual configuration.
+
+          Set an explicit string to override that with a friendlier label
+          such as `"Living Room"`.
         '';
       };
 
@@ -313,7 +334,7 @@ in
       wants = [ "network.target" ]
         ++ lib.optional usePipewire "pipewire.service";
       serviceConfig = {
-        ExecStart = "${pkgs.snapcast}/bin/snapclient ${snapclientArgs}";
+        ExecStart = snapclientExecStart;
         Restart = "always";
         RestartSec = 5;
         DynamicUser = true;
