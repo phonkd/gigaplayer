@@ -53,17 +53,9 @@ in
     enable = lib.mkEnableOption "the gigaplayer stateless Snapcast client appliance";
 
     hostName = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "living-room";
-      description = ''
-        System hostname. When `null` (the default), a oneshot service sets
-        the hostname at boot from the DMI product name
-        (`/sys/class/dmi/id/product_name`), so each device announces a
-        distinct name on mDNS (e.g. `hp-elitebook-840-g5.local`).
-
-        Set an explicit string to pin a friendly name instead.
-      '';
+      type = lib.types.str;
+      default = "gigaplayer";
+      description = "System hostname.";
     };
 
     wifi = {
@@ -274,27 +266,7 @@ in
       }
     ];
 
-    networking.hostName = if cfg.hostName != null then cfg.hostName else "gigaplayer";
-
-    # When hostName is null, override at boot from DMI so each device gets a
-    # unique mDNS name without any per-device config.
-    systemd.services.gigaplayer-set-hostname = lib.mkIf (cfg.hostName == null) {
-      description = "Set hostname from DMI product name";
-      wantedBy = [ "network-pre.target" ];
-      before = [ "network-pre.target" "avahi-daemon.service" ];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-      };
-      script = ''
-        name=$(cat /sys/class/dmi/id/product_name 2>/dev/null)
-        [ -z "$name" ] && name=$(cat /sys/class/dmi/id/board_name 2>/dev/null)
-        [ -z "$name" ] && exit 0
-        # Lower-case and replace spaces/underscores with hyphens for a valid hostname.
-        name=$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr ' _' '-' | tr -cd 'a-z0-9-')
-        ${pkgs.util-linux}/bin/hostnamectl set-hostname "$name"
-      '';
-    };
+    networking.hostName = cfg.hostName;
 
     # --- WiFi (wpa_supplicant, declarative) -------------------------------
     # Firmware for most consumer WiFi chips ships as redistributable blobs.
@@ -343,6 +315,12 @@ in
     services.avahi = lib.mkIf (cfg.snapcast.host == null || cfg.librespot.enable) {
       enable = true;
       nssmdns4 = true;
+      # librespot registers its Spotify Connect DNS-SD service via avahi;
+      # publish must be enabled or it never appears in the Spotify app.
+      publish = lib.mkIf cfg.librespot.enable {
+        enable = true;
+        userServices = true;
+      };
     };
 
     environment.systemPackages = with pkgs; [ snapcast alsa-utils ]
