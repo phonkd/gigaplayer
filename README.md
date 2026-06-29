@@ -1,6 +1,6 @@
 # gigaplayer
 
-Bootable NIxOS live USB that runs a Snapcast client. Clean slate every boot.
+Bootable NixOS live USB that runs a Snapcast client. Clean slate every boot.
 
 ## Usage from your own flake
 
