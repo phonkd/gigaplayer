@@ -34,15 +34,18 @@ let
   # nixpkgs librespot is built with the alsa backend only; PipeWire's ALSA
   # compat layer (alsa.enable = true) routes the output through PipeWire when
   # active, so no separate backend flag is needed.
+  # Fixed Zeroconf port so the firewall rule is stable.
+  librespotZeroconfPort = 5040;
+
   librespotExecStart =
     if cfg.librespot.name != null
-    then "${pkgs.librespot}/bin/librespot --name ${lib.escapeShellArg cfg.librespot.name}"
+    then "${pkgs.librespot}/bin/librespot --name ${lib.escapeShellArg cfg.librespot.name} --zeroconf-port ${toString librespotZeroconfPort}"
     else
       "${pkgs.writeShellScript "librespot-start" ''
         name=$(cat /sys/class/dmi/id/product_name 2>/dev/null)
         [ -z "$name" ] && name=$(cat /sys/class/dmi/id/board_name 2>/dev/null)
         [ -z "$name" ] && name=$(hostname)
-        exec ${pkgs.librespot}/bin/librespot --name "$name"
+        exec ${pkgs.librespot}/bin/librespot --name "$name" --zeroconf-port ${toString librespotZeroconfPort}
       ''}";
 in
 {
@@ -425,6 +428,11 @@ in
         ProtectKernelTunables = true;
         NoNewPrivileges = true;
       };
+    };
+
+    networking.firewall = lib.mkIf cfg.librespot.enable {
+      allowedTCPPorts = [ librespotZeroconfPort ];
+      allowedUDPPorts = [ 5353 ]; # mDNS
     };
 
     # --- Snapcast client --------------------------------------------------
